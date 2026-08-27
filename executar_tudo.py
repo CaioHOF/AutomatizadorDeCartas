@@ -9,6 +9,8 @@ Faz o processo completo em um unico comando:
   2) Chama o GIMP em modo batch (headless) para redimensionar cada
      carta seguindo o processo manual descrito em redimensionar_gimp.py.
   3) Salva o resultado final em "<saida>/prontas/...".
+  4) Monta automaticamente um PDF pronto pra grafica em "<saida>/cartas.pdf"
+     (pode ser desativado com --sem-pdf).
 
 Uso basico:
     python executar_tudo.py --deck "https://archidekt.com/decks/123456/meu-deck"
@@ -21,9 +23,15 @@ Opcoes:
     --gimp CAMINHO         caminho do executavel do GIMP, se nao estiver no PATH
     --pular-download       so roda o GIMP em cima de uma pasta ja baixada antes
     --nao-interativo        nao pergunta nada no terminal
+    --sem-pdf               nao gera o PDF final automaticamente
+    --pdf-saida CAMINHO     caminho do PDF final (padrao: <saida>/cartas.pdf)
+    --pagina a4|letter      tamanho de pagina do PDF (padrao: a4)
+    --margem-mm N           margem da pagina do PDF em mm (padrao: 5)
+    --sem-guias-corte       nao desenha marcas de corte no PDF
 
 Requisitos:
-    - Python 3 com "requests" instalado (pip install requests)
+    - Python 3 com "requests" e "reportlab" instalados
+      (pip install requests reportlab)
     - GIMP 2.10 instalado com suporte a Python-Fu (vem por padrao na
       instalacao normal do GIMP no Windows/Mac/Linux)
 """
@@ -36,6 +44,7 @@ import subprocess
 import sys
 
 import baixar_archidekt
+import gerar_pdf
 
 
 CAMINHOS_GIMP_COMUNS = [
@@ -120,6 +129,11 @@ def main():
     parser.add_argument("--gimp", default=None, help="Caminho do executavel do GIMP, se nao estiver no PATH")
     parser.add_argument("--pular-download", action="store_true", help="Nao baixa nada, so processa uma pasta ja existente")
     parser.add_argument("--nao-interativo", action="store_true", help="Nao pergunta nada no terminal")
+    parser.add_argument("--sem-pdf", action="store_true", help="Nao gerar o PDF final automaticamente")
+    parser.add_argument("--pdf-saida", default=None, help="Caminho do PDF final (padrao: <saida>/cartas.pdf)")
+    parser.add_argument("--pagina", choices=["a4", "letter"], default="a4", help="Tamanho de pagina do PDF")
+    parser.add_argument("--margem-mm", type=float, default=5.0, help="Margem da pagina do PDF em mm")
+    parser.add_argument("--sem-guias-corte", action="store_true", help="Nao desenhar marcas de corte no PDF")
     args = parser.parse_args()
 
     pasta_baixadas = os.path.join(args.saida, "baixadas")
@@ -171,6 +185,23 @@ def main():
             os.remove(script_combinado)
 
     print("\nPronto! Cartas redimensionadas salvas em: %s" % os.path.abspath(pasta_prontas))
+
+    if not args.sem_pdf:
+        caminho_pdf = args.pdf_saida or os.path.join(args.saida, "cartas.pdf")
+        imagens = gerar_pdf.listar_imagens(pasta_prontas)
+        if not imagens:
+            print("\nNenhuma imagem encontrada em %s, PDF nao foi gerado." % pasta_prontas)
+        else:
+            tamanho_pagina = gerar_pdf.A4 if args.pagina == "a4" else gerar_pdf.letter
+            print("\nMontando o PDF final...")
+            gerar_pdf.montar_pdf(
+                imagens=imagens,
+                caminho_saida=caminho_pdf,
+                tamanho_pagina=tamanho_pagina,
+                com_guias_corte=not args.sem_guias_corte,
+                margem_mm=args.margem_mm,
+            )
+            print("PDF gerado em: %s" % os.path.abspath(caminho_pdf))
 
 
 if __name__ == "__main__":
