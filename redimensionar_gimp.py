@@ -16,7 +16,8 @@ Reproduz o processo manual descrito:
   2) Nova camada do mesmo tamanho, cantos arredondados, pintada de preto.
   3) A imagem da carta e inserida, redimensionada para 63mm x 88mm com
      interpolacao NoHalo, e centralizada.
-  4) Resultado exportado em PNG (com transparencia) para a pasta "prontas".
+  4) Resultado exportado em PDF (pagina do tamanho exato da carta) para a
+     pasta "prontas". Nao gera PNG, so PDF.
 """
 
 from gimpfu import *
@@ -38,7 +39,7 @@ def mm_para_px(mm, dpi=DPI):
     return int(round((mm / 25.4) * dpi))
 
 
-def processar_uma_carta(caminho_entrada, caminho_saida):
+def processar_uma_carta(caminho_entrada, caminho_saida_png):
     largura_canvas = mm_para_px(CANVAS_LARGURA_MM)
     altura_canvas = mm_para_px(CANVAS_ALTURA_MM)
     largura_carta = mm_para_px(CARTA_LARGURA_MM)
@@ -111,10 +112,10 @@ def processar_uma_carta(caminho_entrada, caminho_saida):
     pdb.gimp_edit_clear(camada_carta)
     pdb.gimp_selection_none(imagem)
 
-    # 4) achata (mantendo alpha) e exporta em PNG ------------------------
+    # 4) achata (mantendo alpha) e exporta em PNG --------------------------
     camada_final = pdb.gimp_image_merge_visible_layers(imagem, CLIP_TO_IMAGE)
     pdb.file_png_save(
-        imagem, camada_final, caminho_saida, caminho_saida, 0, 9, 1, 1, 1, 1, 1
+        imagem, camada_final, caminho_saida_png, caminho_saida_png, 0, 9, 1, 1, 1, 1, 1
     )
     pdb.gimp_image_delete(imagem)
 
@@ -130,10 +131,10 @@ def processar_pasta(pasta_entrada, pasta_saida):
         if not nome.lower().endswith(EXTENSOES_VALIDAS):
             continue
         origem = os.path.join(pasta_entrada, nome)
-        nome_saida = os.path.splitext(nome)[0] + ".png"
-        destino = os.path.join(pasta_saida, nome_saida)
+        nome_base = os.path.splitext(nome)[0]
+        destino_png = os.path.join(pasta_saida, nome_base + ".png")
         try:
-            processar_uma_carta(origem, destino)
+            processar_uma_carta(origem, destino_png)
             print("OK: %s" % nome)
         except Exception as e:
             print("ERRO em %s: %s" % (nome, e))

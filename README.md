@@ -2,7 +2,8 @@
 
 Baixa as imagens de um deck **público** do Archidekt e já deixa cada carta no
 tamanho certo para impressão (com sangria, cantos arredondados e fundo preto),
-seguindo exatamente o processo manual que você faz hoje no GIMP.
+seguindo exatamente o processo manual que você faz hoje no GIMP — e entrega
+cada carta já em **PDF individual**, pronta pra gráfica.
 
 ## O que o projeto faz
 
@@ -19,9 +20,16 @@ seguindo exatamente o processo manual que você faz hoje no GIMP.
    - Nova camada do mesmo tamanho, cantos arredondados, pintada de preto.
    - Insere a imagem da carta redimensionada para **63 mm × 88 mm** com
      interpolação **NoHalo**, centralizada.
-   - Exporta em PNG para a pasta `prontas/`.
+   - Exporta como PNG (com transparência) para a pasta `prontas/`.
 
-3. **`executar_tudo.py`** — faz as duas etapas acima de uma vez só.
+3. **`executar_tudo.py`** — faz o download, chama o GIMP, e depois **converte
+   cada PNG em um PDF individual** (mesmo tamanho físico exato da carta,
+   herdado automaticamente do DPI do PNG) e **apaga o PNG**, deixando só o
+   PDF — tudo em um único comando.
+
+4. **`gerar_pdf.py`** — opcional. Junta as cartas num único PDF com várias
+   por página em folha A4/Letter, com marcas de corte (útil se a gráfica
+   pedir um arquivo só em vez de um por carta). Veja a seção própria abaixo.
 
 > **Sobre as medidas**: 69×93,98mm é a carta (63×88mm) + ~3mm de sangria em
 > cada lado — o padrão para mandar para gráfica. Se ao abrir o GIMP você
@@ -31,12 +39,18 @@ seguindo exatamente o processo manual que você faz hoje no GIMP.
 
 ## Requisitos
 
-- **Python 3** + biblioteca `requests`:
+- **Python 3** + bibliotecas `requests` e `img2pdf`:
   ```bash
-  pip install requests
+  pip install requests img2pdf
   ```
 - **GIMP 2.10** instalado (com suporte a Python-Fu, que já vem por padrão nos
   instaladores oficiais do GIMP para Windows/Mac/Linux).
+- `reportlab` só é necessário se for usar o `gerar_pdf.py` / `--pdf-grade`
+  (PDF único com várias cartas por página):
+  ```bash
+  pip install reportlab
+  ```
+
 
 ## Como usar
 
@@ -84,7 +98,29 @@ cartas_archidekt/
     └── maybeboard/
 ```
 
-As imagens em `prontas/` são as que você manda para a gráfica.
+As imagens em `prontas/` são as que você manda para a gráfica — cada carta já
+sai como `.png` **e** `.pdf` individual (o PDF já é gerado direto pelo GIMP,
+sem etapa extra).
+
+## PDF único com várias cartas por página (opcional)
+
+Se a gráfica pedir um único arquivo em vez de um PDF por carta, use o
+`gerar_pdf.py` (ou passe `--pdf-grade` para o `executar_tudo.py`):
+
+```bash
+pip install reportlab
+python executar_tudo.py --deck "..." --gimp "..." --pdf-grade
+```
+
+Isso gera, além dos PDFs individuais, um `cartas_grade.pdf` com várias cartas
+por página A4 (ou Letter, com `--pagina letter`), coladas lado a lado no
+tamanho real, com marcas de corte nos cantos de cada carta.
+
+Também dá pra rodar isso separadamente, a qualquer momento, sobre uma pasta
+já processada:
+```bash
+python gerar_pdf.py --entrada cartas_archidekt/prontas --saida cartas_grade.pdf --modo grade
+```
 
 ## Observações
 

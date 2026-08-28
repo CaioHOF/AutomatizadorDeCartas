@@ -6,11 +6,12 @@ executar_tudo.py
 Faz o processo completo em um unico comando:
   1) Baixa as imagens do deck do Archidekt (inDeck obrigatorio,
      sideboard/maybeboard opcionais).
-  2) Chama o GIMP em modo batch (headless) para redimensionar cada
-     carta seguindo o processo manual descrito em redimensionar_gimp.py.
-  3) Salva o resultado final em "<saida>/prontas/...".
-  4) Monta automaticamente um PDF pronto pra grafica em "<saida>/cartas.pdf"
-     (pode ser desativado com --sem-pdf).
+  2) Chama o GIMP em modo batch (headless) para redimensionar cada carta
+     seguindo o processo manual descrito em redimensionar_gimp.py.
+  3) O GIMP salva cada carta como PNG (com transparencia). Em seguida,
+     este script converte cada PNG em um PDF individual (pagina no
+     tamanho fisico exato da carta) e apaga o PNG, deixando so o PDF em
+     "<saida>/prontas/...".
 
 Uso basico:
     python executar_tudo.py --deck "https://archidekt.com/decks/123456/meu-deck"
@@ -23,17 +24,22 @@ Opcoes:
     --gimp CAMINHO         caminho do executavel do GIMP, se nao estiver no PATH
     --pular-download       so roda o GIMP em cima de uma pasta ja baixada antes
     --nao-interativo        nao pergunta nada no terminal
-    --sem-pdf               nao gera o PDF final automaticamente
-    --pdf-saida CAMINHO     caminho do PDF final (padrao: <saida>/cartas.pdf)
-    --pagina a4|letter      tamanho de pagina do PDF (padrao: a4)
-    --margem-mm N           margem da pagina do PDF em mm (padrao: 5)
-    --sem-guias-corte       nao desenha marcas de corte no PDF
+    --pdf-grade             (opcional) alem dos PDFs individuais, tambem monta
+                             um unico PDF com varias cartas por pagina (requer
+                             "pip install reportlab"). OBS: essa opcao le
+                             arquivos .png/.jpg em "prontas/", que nao sao mais
+                             gerados por padrao -- so use --pdf-grade se voce
+                             tambem gerar essas imagens por outro meio.
+    --pagina a4|letter      [--pdf-grade] tamanho de pagina
+    --margem-mm N           [--pdf-grade] margem da pagina em mm (padrao: 5)
+    --sem-guias-corte       [--pdf-grade] nao desenha marcas de corte
 
 Requisitos:
-    - Python 3 com "requests" e "reportlab" instalados
-      (pip install requests reportlab)
+    - Python 3 com "requests" e "img2pdf" instalados
+      (pip install requests img2pdf)
     - GIMP 2.10 instalado com suporte a Python-Fu (vem por padrao na
       instalacao normal do GIMP no Windows/Mac/Linux)
+    - reportlab so e necessario se usar --pdf-grade (pip install reportlab)
 """
 
 import argparse
@@ -44,7 +50,41 @@ import subprocess
 import sys
 
 import baixar_archidekt
-import gerar_pdf
+
+
+def converter_pngs_para_pdf_e_apagar(pasta_prontas):
+    """Converte cada PNG dentro de inDeck/sideboard/maybeboard em um PDF de
+    mesmo nome (pagina no tamanho fisico exato, preservado a partir do DPI
+    do PNG) e apaga o PNG, deixando so o PDF."""
+    import img2pdf
+
+    subpastas = ("inDeck", "sideboard", "maybeboard")
+    convertidos = 0
+    falhas = []
+
+    pastas_existentes = [
+        os.path.join(pasta_prontas, s) for s in subpastas
+        if os.path.isdir(os.path.join(pasta_prontas, s))
+    ] or [pasta_prontas]
+
+    for pasta in pastas_existentes:
+        for nome in sorted(os.listdir(pasta)):
+            if not nome.lower().endswith(".png"):
+                continue
+            caminho_png = os.path.join(pasta, nome)
+            caminho_pdf = os.path.join(pasta, os.path.splitext(nome)[0] + ".pdf")
+            try:
+                with open(caminho_pdf, "wb") as f:
+                    f.write(img2pdf.convert(caminho_png))
+                os.remove(caminho_png)
+                convertidos += 1
+            except Exception as e:
+                print("  [ERRO ao converter] %s: %s" % (nome, e))
+                falhas.append(nome)
+
+    print("PNG -> PDF convertidos: %d" % convertidos)
+    if falhas:
+        print("Falharam: %d arquivo(s)" % len(falhas))
 
 
 CAMINHOS_GIMP_COMUNS = [
@@ -129,11 +169,12 @@ def main():
     parser.add_argument("--gimp", default=None, help="Caminho do executavel do GIMP, se nao estiver no PATH")
     parser.add_argument("--pular-download", action="store_true", help="Nao baixa nada, so processa uma pasta ja existente")
     parser.add_argument("--nao-interativo", action="store_true", help="Nao pergunta nada no terminal")
-    parser.add_argument("--sem-pdf", action="store_true", help="Nao gerar o PDF final automaticamente")
-    parser.add_argument("--pdf-saida", default=None, help="Caminho do PDF final (padrao: <saida>/cartas.pdf)")
-    parser.add_argument("--pagina", choices=["a4", "letter"], default="a4", help="Tamanho de pagina do PDF")
-    parser.add_argument("--margem-mm", type=float, default=5.0, help="Margem da pagina do PDF em mm")
-    parser.add_argument("--sem-guias-corte", action="store_true", help="Nao desenhar marcas de corte no PDF")
+    parser.add_argument("--pdf-grade", action="store_true",
+                         help="Alem dos PDFs individuais, monta tambem um unico PDF em grade (requer reportlab)")
+    parser.add_argument("--pdf-grade-saida", default=None, help="Caminho do PDF em grade (padrao: <saida>/cartas_grade.pdf)")
+    parser.add_argument("--pagina", choices=["a4", "letter"], default="a4", help="[--pdf-grade] Tamanho de pagina")
+    parser.add_argument("--margem-mm", type=float, default=5.0, help="[--pdf-grade] Margem da pagina em mm")
+    parser.add_argument("--sem-guias-corte", action="store_true", help="[--pdf-grade] Nao desenhar marcas de corte")
     args = parser.parse_args()
 
     pasta_baixadas = os.path.join(args.saida, "baixadas")
@@ -184,16 +225,20 @@ def main():
         if os.path.exists(script_combinado):
             os.remove(script_combinado)
 
-    print("\nPronto! Cartas redimensionadas salvas em: %s" % os.path.abspath(pasta_prontas))
+    print("\nConvertendo PNG -> PDF (um arquivo por carta)...")
+    converter_pngs_para_pdf_e_apagar(pasta_prontas)
 
-    if not args.sem_pdf:
-        caminho_pdf = args.pdf_saida or os.path.join(args.saida, "cartas.pdf")
+    print("\nPronto! Cada carta ja foi salva como PDF individual dentro de: %s" % os.path.abspath(pasta_prontas))
+
+    if args.pdf_grade:
+        import gerar_pdf  # import tardio: so exige reportlab se essa opcao for usada
+        caminho_pdf = args.pdf_grade_saida or os.path.join(args.saida, "cartas_grade.pdf")
         imagens = gerar_pdf.listar_imagens(pasta_prontas)
         if not imagens:
-            print("\nNenhuma imagem encontrada em %s, PDF nao foi gerado." % pasta_prontas)
+            print("\nNenhuma imagem encontrada em %s, PDF em grade nao foi gerado." % pasta_prontas)
         else:
             tamanho_pagina = gerar_pdf.A4 if args.pagina == "a4" else gerar_pdf.letter
-            print("\nMontando o PDF final...")
+            print("\nMontando o PDF em grade...")
             gerar_pdf.montar_pdf(
                 imagens=imagens,
                 caminho_saida=caminho_pdf,
@@ -201,7 +246,7 @@ def main():
                 com_guias_corte=not args.sem_guias_corte,
                 margem_mm=args.margem_mm,
             )
-            print("PDF gerado em: %s" % os.path.abspath(caminho_pdf))
+            print("PDF em grade gerado em: %s" % os.path.abspath(caminho_pdf))
 
 
 if __name__ == "__main__":
