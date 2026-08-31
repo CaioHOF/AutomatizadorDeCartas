@@ -32,9 +32,9 @@ import unicodedata
 import requests
 
 ARCHIDEKT_API = "https://archidekt.com/api/decks/{deck_id}/"
-SCRYFALL_BY_ID = "https://api.scryfall.com/cards/{scryfall_id}?format=image"
-SCRYFALL_BY_SET = "https://api.scryfall.com/cards/{codigo_set}/{numero}?format=image"
-SCRYFALL_BY_NAME = "https://api.scryfall.com/cards/named?exact={nome}&format=image"
+SCRYFALL_JSON_BY_ID = "https://api.scryfall.com/cards/{scryfall_id}"
+SCRYFALL_JSON_BY_SET = "https://api.scryfall.com/cards/{codigo_set}/{numero}"
+SCRYFALL_JSON_BY_NAME = "https://api.scryfall.com/cards/named?exact={nome}"
 
 # Scryfall pede um User-Agent identificavel e no maximo ~10 requisicoes/seg.
 HEADERS_SCRYFALL = {
@@ -141,35 +141,72 @@ def extrair_info_carta(entrada_carta: dict):
     }
 
 
-def baixar_bytes_imagem(info_carta: dict) -> bytes:
-    """Tenta baixar a imagem da carta no Scryfall, em ordem de confiabilidade."""
+def escolher_url_imagem(image_uris: dict):
+    """Prefere 'large' (JPG retangular, sem transparencia -- evita franjas
+    brancas no redimensionamento), com fallback pra outros formatos."""
+    if not image_uris:
+        return None
+    return image_uris.get("large") or image_uris.get("normal") or image_uris.get("png")
+
+
+def buscar_json_scryfall(info_carta: dict) -> dict:
+    """Busca o JSON completo da carta no Scryfall, tentando por id, depois
+    set+numero, depois nome exato."""
     tentativas = []
 
     if info_carta["scryfall_id"]:
-        tentativas.append(SCRYFALL_BY_ID.format(scryfall_id=info_carta["scryfall_id"]))
+        tentativas.append(SCRYFALL_JSON_BY_ID.format(scryfall_id=info_carta["scryfall_id"]))
 
     if info_carta["codigo_set"] and info_carta["numero_colecionador"]:
         tentativas.append(
-            SCRYFALL_BY_SET.format(
+            SCRYFALL_JSON_BY_SET.format(
                 codigo_set=info_carta["codigo_set"].lower(),
                 numero=info_carta["numero_colecionador"],
             )
         )
 
-    tentativas.append(SCRYFALL_BY_NAME.format(nome=requests.utils.quote(info_carta["nome"])))
+    tentativas.append(SCRYFALL_JSON_BY_NAME.format(nome=requests.utils.quote(info_carta["nome"])))
 
     ultimo_erro = None
     for url in tentativas:
         try:
-            resp = requests.get(url, headers=HEADERS_SCRYFALL, timeout=30, allow_redirects=True)
-            if resp.status_code == 200 and resp.headers.get("content-type", "").startswith("image"):
-                return resp.content
+            resp = requests.get(url, headers=HEADERS_ARCHIDEKT, timeout=30)
+            if resp.status_code == 200:
+                return resp.json()
             ultimo_erro = "HTTP %s em %s" % (resp.status_code, url)
         except requests.RequestException as e:
             ultimo_erro = str(e)
         time.sleep(PAUSA_ENTRE_REQUISICOES)
 
-    raise RuntimeError("Nao foi possivel baixar imagem para '%s' (%s)" % (info_carta["nome"], ultimo_erro))
+    raise RuntimeError("Nao foi possivel obter dados para '%s' (%s)" % (info_carta["nome"], ultimo_erro))
+
+
+def extrair_faces(dados_json: dict):
+    """Retorna uma lista de (nome_da_face, url_imagem).
+
+    Cartas normais tem 1 unica face. Cartas de dupla face com imagens
+    proprias em cada lado (transform, modal DFC) retornam 2 faces --
+    cada uma vira um arquivo/carta separado. Cartas "split" (que
+    compartilham uma unica imagem para os dois lados) continuam como 1 face.
+    """
+    faces_json = dados_json.get("card_faces")
+
+    if faces_json and len(faces_json) > 1 and all(f.get("image_uris") for f in faces_json):
+        return [(f["name"], escolher_url_imagem(f["image_uris"])) for f in faces_json]
+
+    if dados_json.get("image_uris"):
+        return [(dados_json.get("name"), escolher_url_imagem(dados_json["image_uris"]))]
+
+    if faces_json and faces_json[0].get("image_uris"):
+        return [(dados_json.get("name") or faces_json[0]["name"], escolher_url_imagem(faces_json[0]["image_uris"]))]
+
+    raise RuntimeError("Carta sem imagem disponivel no Scryfall")
+
+
+def baixar_bytes_imagem(url: str) -> bytes:
+    resp = requests.get(url, headers=HEADERS_SCRYFALL, timeout=30)
+    resp.raise_for_status()
+    return resp.content
 
 
 def baixar_deck(
@@ -210,27 +247,42 @@ def baixar_deck(
             continue
 
         info = extrair_info_carta(entrada)
-        nome_arquivo_base = sanitizar_nome_arquivo(info["nome"])
 
         try:
-            imagem_bytes = baixar_bytes_imagem(info)
+            dados_json = buscar_json_scryfall(info)
+            faces = extrair_faces(dados_json)
         except RuntimeError as e:
             print("  [FALHA] %s" % e)
             falhas.append(info["nome"])
             continue
 
         copias = 1 if uma_copia_por_carta else max(info["quantidade"], 1)
-        for i in range(1, copias + 1):
-            sufixo = "" if copias == 1 else "_%d" % i
-            caminho_arquivo = os.path.join(
-                pastas[categoria], "%s%s.png" % (nome_arquivo_base, sufixo)
-            )
-            with open(caminho_arquivo, "wb") as f:
-                f.write(imagem_bytes)
 
-        contadores[categoria] += copias
-        print("  [OK] (%s) %s x%d" % (categoria, info["nome"], copias))
-        time.sleep(PAUSA_ENTRE_REQUISICOES)
+        for nome_face, url_imagem in faces:
+            if not url_imagem:
+                print("  [FALHA] %s: face sem imagem" % nome_face)
+                falhas.append(nome_face)
+                continue
+
+            try:
+                imagem_bytes = baixar_bytes_imagem(url_imagem)
+            except requests.RequestException as e:
+                print("  [FALHA] %s: %s" % (nome_face, e))
+                falhas.append(nome_face)
+                continue
+
+            nome_arquivo_base = sanitizar_nome_arquivo(nome_face)
+            for i in range(1, copias + 1):
+                sufixo = "" if copias == 1 else "_%d" % i
+                caminho_arquivo = os.path.join(
+                    pastas[categoria], "%s%s.png" % (nome_arquivo_base, sufixo)
+                )
+                with open(caminho_arquivo, "wb") as f:
+                    f.write(imagem_bytes)
+
+            contadores[categoria] += copias
+            print("  [OK] (%s) %s x%d" % (categoria, nome_face, copias))
+            time.sleep(PAUSA_ENTRE_REQUISICOES)
 
     print("\nResumo:")
     for cat, qtd in contadores.items():
